@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Mapa ITS</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 5px 10px; background-color: #f4f7f6; color: #333; overflow: hidden; }
+        .panel { background: white; padding: 6px 12px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+        h2 { margin: 0; color: #0056b3; font-size: 14px; white-space: nowrap; border-right: 2px solid #eee; padding-right: 12px; }
+        .controls { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap;}
+        .file-input { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: bold; white-space: nowrap;}
+        .btn-clear { padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold; transition: 0.2s; white-space: nowrap;}
+        .btn-clear:hover { background: #c82333; }
+        .status { font-weight: bold; font-size: 12px; color: #666; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px;}
+        #map { height: 92vh; width: 100%; border: 2px solid #ddd; border-radius: 6px; z-index: 1;}
+        .info-card { background: white; padding: 10px; border-radius: 6px; box-shadow: 0 0 15px rgba(0,0,0,0.2); font-size: 11px; line-height: 1.4; }
+        .dashboard-panel { border-left: 4px solid #28a745; min-width: 190px;}
+        .legend-panel { border-left: 4px solid #ff9800; }
+        .kpi { font-size: 16px; font-weight: bold; color: #0056b3; margin: 0;}
+        
+        .custom-select { position: relative; display: inline-block; font-size: 12px; font-weight: normal; }
+        .custom-select summary { background: #fff; border: 1px solid #ccc; padding: 4px 25px 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; list-style: none; user-select: none; position: relative; white-space: nowrap; min-width: 130px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+        .custom-select summary::-webkit-details-marker { display: none; }
+        .custom-select summary::after { content: '▼'; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 9px; color: #666; }
+        .custom-select .options { position: absolute; top: 100%; left: 0; background: white; border: 1px solid #ccc; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.2); z-index: 1000; min-width: 250px; max-height: 300px; overflow-y: auto; padding: 6px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+        .custom-select label { display: flex; align-items: center; gap: 6px; padding: 3px; cursor: pointer; border-radius: 3px; }
+        .custom-select label:hover { background: #f0f8ff; }
+        .custom-select input[type="checkbox"] { transform: scale(1); cursor: pointer; margin: 0;}
+    </style>
+</head>
+<body>
+
+<div class="panel">
+    <h2 id="tituloApp">🗺️ Mapa ITS</h2>
+    <div class="controls">
+        <button class="btn-clear" onclick="limpiarMapa()">🗑️ Limpiar</button>
+        <button class="btn-clear" style="background:#28a745;" onclick="descargarDatosExcel()">📥 Descargar Data</button>
+        
+        <div class="file-input" style="border-left: 2px solid #ddd; padding-left: 10px;">
+            <label>🌎 Estado:</label>
+            <details class="custom-select" id="estadoDropdown" style="pointer-events: none;">
+                <summary id="estadoSummary">-- Conectando... --</summary>
+                <div class="options" id="estadoOptions"><div style="color:#999; font-style:italic;">Esperando datos...</div></div>
+            </details>
+        </div>
+        
+        <div class="file-input">
+            <label>📍 Región:</label>
+            <details class="custom-select" id="munDropdown" style="pointer-events: none;">
+                <summary id="munSummary">Esperando...</summary>
+                <div class="options" id="munOptions"><div style="color:#999; font-style:italic;">Esperando datos...</div></div>
+            </details>
+        </div>
+    </div>
+    <div id="status-msg" class="status" style="color: #ff9800;">☁️ Descargando bases de datos...</div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<script>
+    const URL_POBLACION  = "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_POBLACION_NACIONAL.csv";
+
+    const URLS_DENUE = [
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%201_NACIONAL.csv",
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%202_NACIONAL.csv",
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%203_NACIONAL.csv",
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%204_NACIONAL.csv",
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%205_NACIONAL.csv",
+        "https://raw.githubusercontent.com/geomarketing-cp/Mapa-Nacional-ITS/refs/heads/main/DB_DENUE%20PARTE%206_NACIONAL.csv"
+    ];
+
+    let map, pobLayer, heatLayerTienditas, heatLayerPoblacion, layerControl, clusterTienditas, controlDashboard;
+    let dbPoblacion = [];
+    let dbDenue = [];
+    
+    let granTotalPob = 0;
+    let granTotalTiendas = 0;
+
+    try {
+        if (typeof L === 'undefined') throw new Error("Red corporativa bloqueó la librería gráfica.");
+        
+        map = L.map('map').setView([23.6345, -102.5528], 5);
+        
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri', maxZoom: 18
+        }).addTo(map);
+
+        pobLayer = L.layerGroup();
+        clusterTienditas = L.markerClusterGroup({ 
+            maxClusterRadius: 40, 
+            disableClusteringAtZoom: 15,
+            chunkedLoading: true 
+        });
+
+        const legend = L.control({position: 'bottomright'});
+        legend.onAdd = function () {
+            const div = L.DomUtil.create('div', 'info-card legend-panel');
+            div.innerHTML = `
+                <h4 style="margin:0 0 6px 0; color:#555;">📌 Simbología</h4>
+                <b>Población (Habitantes)</b><br>
+                <span style="color:#cc0000; font-size:10px;">●</span> Menos de 1k<br>
+                <span style="color:#cc0000; font-size:16px;">●</span> 20k a 100k<br>
+                <span style="color:#cc0000; font-size:20px;">●</span> Más de 100k<br><hr style="margin:4px 0;">
+                <b>Tienditas (Trabajadores)</b><br>
+                <span style="color:#007bff; font-size:10px;">●</span> 0 a 5<br>
+                <span style="color:#007bff; font-size:16px;">●</span> 11 a 30<br>
+                <span style="color:#007bff; font-size:20px;">●</span> Más de 30
+            `;
+            return div;
+        };
+        legend.addTo(map);
+
+        controlDashboard = L.control({position: 'bottomleft'});
+        controlDashboard.onAdd = function () {
+            const div = L.DomUtil.create('div', 'info-card dashboard-panel');
+            div.id = 'kpi-panel';
+            div.innerHTML = `<b>📊 Resumen Analítico</b><br>Descargando de la nube...`;
+            return div;
+        };
+        controlDashboard.addTo(map);
+    } catch (e) {
+        document.getElementById('status-msg').innerText = "⚠️ Error de red: " + e.message;
+    }
+
+    document.addEventListener('click', function(event) {
+        const dropEstado = document.getElementById('estadoDropdown');
+        const dropMun = document.getElementById('munDropdown');
+        if (dropEstado && !dropEstado.contains(event.target)) dropEstado.removeAttribute('open');
+        if (dropMun && !dropMun.contains(event.target)) dropMun.removeAttribute('open');
+    });
+
+    function normalizarTexto(txt) {
+        if (!txt) return "";
+        return txt.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    }
+
+    function limpiarCoordenada(val, esLongitud) {
+        if (!val) return NaN;
+        let str = String(val).trim();
+        if (str.includes('°')) {
+            let match = str.match(/(\d+)[^\d]+(\d+)[^\d]+([\d.]+)/);
+            if (match && match.length >= 4) {
+                let d = parseFloat(match[1]);
+                let m = parseFloat(match[2]);
+                let s = parseFloat(match[3]);
+                let decimal = d + (m / 60) + (s / 3600);
+                return esLongitud ? -decimal : decimal;
+            }
+        }
+        let num = parseFloat(str);
+        if (!isNaN(num)) {
+            if (esLongitud && num > 0) num = -num;
+            return num;
+        }
+        return NaN;
+    }
+
+    function actualizarDashboard(nombreZona, pobTotal, locsTotal, tienditasTotal, basePob, baseTiendas, nombreReferencia) {
+        if (!document.getElementById('kpi-panel')) return;
+        let pctPob = (basePob > 0) ? ((pobTotal / basePob) * 100).toFixed(1) : 0;
+        let pctTiendas = (baseTiendas > 0) ? ((tienditasTotal / baseTiendas) * 100).toFixed(1) : 0;
+        let infoPobExtra = ""; let infoTiendasExtra = "";
+        
+        if (pobTotal > 0 && pobTotal < basePob) {
+            infoPobExtra = `<br><span style="font-size:10px; color:#555;">Representa el <b>${pctPob}%</b> de ${nombreReferencia} (${basePob.toLocaleString()} hab.)</span>`;
+        }
+        if (tienditasTotal > 0 && tienditasTotal < baseTiendas) {
+            infoTiendasExtra = `<br><span style="font-size:10px; color:#555;">Representa el <b>${pctTiendas}%</b> de ${nombreReferencia} (${baseTiendas.toLocaleString()} locales)</span>`;
+        }
+
+        document.getElementById('kpi-panel').innerHTML = `
+            <div style="color:#777; text-transform:uppercase; font-size:9px; font-weight:bold;">Zona analizada</div>
+            <h4 style="margin:0 0 8px 0; font-size:13px; max-width:220px;">📍 ${nombreZona}</h4>
+            <div style="margin-bottom:8px;">
+                <span style="color:#555;">Población Total:</span><br>
+                <p class="kpi" style="color:#cc0000; margin-bottom:2px;">${pobTotal.toLocaleString()} hab.</p>
+                <span style="font-size:9px; color:#888;">en ${locsTotal.toLocaleString()} localidades mapeadas</span>
+                ${infoPobExtra}
+            </div>
+            <div>
+                <span style="color:#555;">Unidades (Abarrotes):</span><br>
+                <p class="kpi" style="color:#0056b3; margin-bottom:2px;">${tienditasTotal.toLocaleString()}</p>
+                <span style="font-size:9px; color:#888;">negocios registrados</span>
+                ${infoTiendasExtra}
+            </div>
+        `;
+    }
+
+    function triggerRender() {
+        const statusMsg = document.getElementById('status-msg');
+        statusMsg.style.color = "#ff9800";
+        statusMsg.innerText = "🚀 Procesando datos... (Un momento por favor)";
+        setTimeout(renderizarMapa, 50);
+    }
+
+    function toggleTodosEstados() {
+        let isChecked = document.getElementById('cb-todos-estados').checked;
+        let cbs = document.querySelectorAll('.estado-cb');
+        if(isChecked) cbs.forEach(cb => cb.checked = false);
+        alCambiarEstado();
+    }
+
+    function verificarSeleccionEstados() {
+        document.getElementById('cb-todos-estados').checked = false;
+        let cbs = document.querySelectorAll('.estado-cb:checked');
+        if(cbs.length === 0) limpiarMapa();
+        else alCambiarEstado();
+    }
+
+    function toggleTodos() {
+        let isChecked = document.getElementById('cb-todos').checked;
+        let cbs = document.querySelectorAll('.mun-cb');
+        if(isChecked) cbs.forEach(cb => cb.checked = false);
+        triggerRender();
+    }
+
+    function verificarSeleccion() {
+        document.getElementById('cb-todos').checked = false;
+        let cbs = document.querySelectorAll('.mun-cb:checked');
+        if(cbs.length === 0) document.getElementById('cb-todos').checked = true;
+        triggerRender();
+    }
+
+    function limpiarMapa() {
+        if (!map) return; 
+        pobLayer.clearLayers(); 
+        clusterTienditas.clearLayers();
+        
+        // Retirar por completo todas las capas del mapa para evitar encendidos automáticos
+        if (map.hasLayer(pobLayer)) map.removeLayer(pobLayer);
+        if (map.hasLayer(clusterTienditas)) map.removeLayer(clusterTienditas);
+        if (heatLayerTienditas && map.hasLayer(heatLayerTienditas)) map.removeLayer(heatLayerTienditas);
+        if (heatLayerPoblacion && map.hasLayer(heatLayerPoblacion)) map.removeLayer(heatLayerPoblacion);
+        if (layerControl) { map.removeControl(layerControl); layerControl = null; }
+        
+        map.setView([23.6345, -102.5528], 5);
+        document.getElementById('tituloApp').innerText = `🗺️ Mapa ITS`;
+        
+        let cbTodosEst = document.getElementById('cb-todos-estados');
+        if(cbTodosEst) cbTodosEst.checked = false;
+        document.querySelectorAll('.estado-cb').forEach(cb => cb.checked = false);
+        
+        document.getElementById('estadoSummary').innerText = "-- Selecciona --";
+        document.getElementById('munDropdown').style.pointerEvents = "none";
+        document.getElementById('munSummary').innerText = "Esperando...";
+        document.getElementById('munOptions').innerHTML = `<div style="color:#999; font-style:italic;">Selecciona estado(s) primero.</div>`;
+        
+        if (document.getElementById('kpi-panel')) {
+            document.getElementById('kpi-panel').innerHTML = `
+                <div style="color:#777; text-transform:uppercase; font-size:9px; font-weight:bold;">Zona analizada</div>
+                <h4 style="margin:0 0 8px 0; font-size:13px; color:#999;">Ninguna</h4>
+                <div style="color:#666; font-size:11px;">Selecciona uno o más estados en el menú superior para comenzar el análisis.</div>
+            `;
+        }
+        
+        document.getElementById('status-msg').style.color = "#0056b3";
+        document.getElementById('status-msg').innerText = "🔄 Mapa limpio. Elige estados/regiones.";
+    }
+
+    function descargarCSV(url) {
+        return new Promise((resolve, reject) => {
+            if(!url) { resolve([]); return; }
+            Papa.parse(url, {
+                download: true, header: true, skipEmptyLines: true, encoding: "UTF-8",
+                transformHeader: function(h) { return h.trim(); },
+                complete: function(results) { resolve(results.data); },
+                error: function(err) { reject(err); }
+            });
+        });
+    }
+
+    window.onload = function() {
+        const statusMsg = document.getElementById('status-msg');
+        let estadosSet = new Set();
+        statusMsg.innerText = `⏳ Descargando población y ${URLS_DENUE.length} fragmentos del DENUE...`;
+
+        let promesas = [descargarCSV(URL_POBLACION)];
+        URLS_DENUE.forEach(u => promesas.push(descargarCSV(u)));
+
+        Promise.all(promesas).then(resultados => {
+            statusMsg.innerText = "🧩 Procesando y fusionando datos en memoria...";
+            
+            let dataPob = resultados[0];
+            dataPob.forEach(row => {
+                let lat = limpiarCoordenada(row['LATITUD'] || row['latitud'], false);
+                let lon = limpiarCoordenada(row['LONGITUD'] || row['longitud'], true);
+                
+                let pobStr = row['POBTOT'] || row['pobtot'] || "0";
+                let pob = parseInt(String(pobStr).replace(/,/g, ''));
+                let mun = row['NOM_MUN'] || row['nom_mun'] || "Desconocido";
+                let estado = row['NOM_ENT'] || row['nom_ent'] || "Desconocido";
+                let loc = row['NOM_LOC'] || row['nom_loc'] || "Localidad";
+                
+                if (mun !== "Total nacional" && loc !== "Total nacional" && loc !== "Total de la Entidad" && loc !== "Total del Municipio") {
+                    if (!isNaN(lat) && !isNaN(lon) && !isNaN(pob) && pob > 0) {
+                        let munNorm = normalizarTexto(mun);
+                        let estadoNorm = normalizarTexto(estado);
+                        if (estado !== "Desconocido" && estadoNorm !== "TOTAL NACIONAL") estadosSet.add(estado);
+                        dbPoblacion.push({ lat, lon, pob, mun, munNorm, loc, estado, estadoNorm });
+                        granTotalPob += pob; 
+                    }
+                }
+            });
+
+            let dataDenueCompleta = [];
+            for (let i = 1; i < resultados.length; i++) {
+                dataDenueCompleta = dataDenueCompleta.concat(resultados[i]);
+            }
+
+            dataDenueCompleta.forEach(row => {
+                let lat = limpiarCoordenada(row['latitud'], false);
+                let lon = limpiarCoordenada(row['longitud'], true);
+                let munNorm = normalizarTexto(row['municipio']);
+                let estadoNorm = normalizarTexto(row['entidad']);
+                
+                if (!isNaN(lat) && !isNaN(lon)) {
+                    let matchOcu = String(row['per_ocu']).match(/\d+/);
+                    let numOcu = matchOcu ? parseInt(matchOcu[0]) : 0;
+                    dbDenue.push({
+                        lat, lon, munNorm, estadoNorm, numOcu, 
+                        nombre: row['nom_estab'] || "Abarrotes", 
+                        act: row['nombre_act'] || "Comercio", 
+                        per_ocu: row['per_ocu'] || "N/A"
+                    });
+                    granTotalTiendas++; 
+                }
+            });
+
+            let estadoOptionsHtml = `<label style="font-weight:bold; color:#0056b3; background:#f4f7f6;"><input type="checkbox" id="cb-todos-estados" onchange="toggleTodosEstados()"> Todo México</label><hr style="margin:4px 0; border:0; border-top:1px solid #ddd;">`;
+            Array.from(estadosSet).sort().forEach(e => {
+                estadoOptionsHtml += `<label><input type="checkbox" value="${normalizarTexto(e)}" class="estado-cb" onchange="verificarSeleccionEstados()"> ${e}</label>`;
+            });
+            document.getElementById('estadoOptions').innerHTML = estadoOptionsHtml;
+            document.getElementById('estadoDropdown').style.pointerEvents = "auto";
+
+            limpiarMapa();
+            statusMsg.innerText = "✅ Conectado a la Nube. ¡Selecciona zonas para iniciar!";
+            statusMsg.style.color = "#28a745";
+
+        }).catch(err => {
+            statusMsg.innerText = "⚠️ Error al conectar con GitHub. Verifica tus enlaces Raw.";
+            statusMsg.style.color = "red";
+            console.error(err);
+        });
+    };
+
+    function alCambiarEstado() {
+        let isTodosEstados = document.getElementById('cb-todos-estados').checked;
+        let cbsEstados = document.querySelectorAll('.estado-cb:checked');
+        let valoresEstadosSeleccionados = Array.from(cbsEstados).map(cb => cb.value);
+        let nombresEstadosSeleccionados = Array.from(cbsEstados).map(cb => cb.nextSibling.textContent.trim());
+
+        let estadoSummary = document.getElementById('estadoSummary');
+        let munDropdown = document.getElementById('munDropdown');
+        let munSummary = document.getElementById('munSummary');
+        let munOptions = document.getElementById('munOptions');
+
+        if (isTodosEstados) {
+            estadoSummary.innerText = "Todo México";
+            document.getElementById('tituloApp').innerText = `🗺️ Mapa ITS: Nacional`;
+            munSummary.innerText = "Aplica al país";
+            munOptions.innerHTML = `<div style="color:#999; font-style:italic;">Filtra estado(s) primero.</div>`;
+            munDropdown.style.pointerEvents = "none"; 
+        } else {
+            if (nombresEstadosSeleccionados.length === 1) {
+                estadoSummary.innerText = nombresEstadosSeleccionados[0];
+                document.getElementById('tituloApp').innerText = `🗺️ Mapa ITS: ${nombresEstadosSeleccionados[0]}`;
+            } else {
+                estadoSummary.innerText = `Varios (${nombresEstadosSeleccionados.length})`;
+                document.getElementById('tituloApp').innerText = `🗺️ Mapa ITS: Multiestatal`;
+            }
+
+            munDropdown.style.pointerEvents = "auto";
+            
+            let municipiosDisponibles = [];
+            let munSet = new Set();
+            
+            dbPoblacion.forEach(item => {
+                if (valoresEstadosSeleccionados.includes(item.estadoNorm)) {
+                    let key = item.estadoNorm + "|" + item.munNorm;
+                    if (!munSet.has(key)) {
+                        munSet.add(key);
+                        let labelTexto = nombresEstadosSeleccionados.length > 1 ? `${item.mun} (${item.estado})` : item.mun;
+                        municipiosDisponibles.push({ 
+                            key: key, 
+                            label: labelTexto,
+                            estadoStr: item.estado,
+                            munStr: item.mun
+                        });
+                    }
+                }
+            });
+
+            municipiosDisponibles.sort((a, b) => a.estadoStr.localeCompare(b.estadoStr) || a.munStr.localeCompare(b.munStr));
+
+            let optionsHtml = `<label style="font-weight:bold; color:#0056b3; background:#f4f7f6;"><input type="checkbox" id="cb-todos" checked onchange="toggleTodos()"> Todos los Municipios</label><hr style="margin:4px 0; border:0; border-top:1px solid #ddd;">`;
+            
+            municipiosDisponibles.forEach(m => {
+                optionsHtml += `<label><input type="checkbox" value="${m.key}" class="mun-cb" onchange="verificarSeleccion()"> ${m.label}</label>`;
+            });
+            
+            munOptions.innerHTML = optionsHtml;
+            munSummary.innerText = "Todos los Municipios";
+        }
+        triggerRender(); 
+    }
+
+    function renderizarMapa() {
+        const statusMsg = document.getElementById('status-msg');
+        let isTodosEstados = document.getElementById('cb-todos-estados').checked;
+        let cbsEstados = document.querySelectorAll('.estado-cb:checked');
+        
+        if (!isTodosEstados && cbsEstados.length === 0) {
+            limpiarMapa();
+            return;
+        }
+
+        let valoresEstados = Array.from(cbsEstados).map(cb => cb.value);
+        let nombresEstados = Array.from(cbsEstados).map(cb => cb.nextSibling.textContent.trim());
+
+        let isTodosMun = true; let valoresMunSeleccionados = []; let nombresMunSeleccionados = [];
+
+        if (!isTodosEstados) {
+            let cbTodosMunElement = document.getElementById('cb-todos');
+            if (cbTodosMunElement) isTodosMun = cbTodosMunElement.checked;
+            
+            let cbsMunSeleccionados = document.querySelectorAll('.mun-cb:checked');
+            valoresMunSeleccionados = Array.from(cbsMunSeleccionados).map(cb => cb.value);
+            nombresMunSeleccionados = Array.from(cbsMunSeleccionados).map(cb => cb.nextSibling.textContent.trim());
+            
+            let nombreFiltroTexto = "Todos los Municipios";
+            if (!isTodosMun) {
+                if (nombresMunSeleccionados.length === 1) nombreFiltroTexto = nombresMunSeleccionados[0];
+                else if (nombresMunSeleccionados.length > 1) nombreFiltroTexto = `Región (${nombresMunSeleccionados.length} Mun.)`;
+            }
+            if (document.getElementById('munSummary')) document.getElementById('munSummary').innerText = nombreFiltroTexto;
+        }
+
+        pobLayer.clearLayers(); clusterTienditas.clearLayers();
+        
+        // Retirar capas del mapa antes de reconstruir para evitar defaults indeseados
+        if (map.hasLayer(pobLayer)) map.removeLayer(pobLayer);
+        if (map.hasLayer(clusterTienditas)) map.removeLayer(clusterTienditas);
+        if (heatLayerTienditas) map.removeLayer(heatLayerTienditas);
+        if (heatLayerPoblacion) map.removeLayer(heatLayerPoblacion);
+        if (layerControl) { map.removeControl(layerControl); layerControl = null; }
+
+        let heatDataTienditas = []; let heatDataPoblacion = [];
+        let bounds = L.latLngBounds();
+        let totalPob = 0; let countLocs = 0; let countTienditas = 0;
+        
+        let basePobTotal = 0; let baseTienditasTotal = 0;
+
+        dbPoblacion.forEach(item => {
+            let pasaFiltroEstado = isTodosEstados || valoresEstados.includes(item.estadoNorm);
+            if (pasaFiltroEstado) {
+                basePobTotal += item.pob; 
+                let compositeKey = item.estadoNorm + "|" + item.munNorm;
+                let pasaFiltroMun = isTodosEstados || isTodosMun || valoresMunSeleccionados.includes(compositeKey);
+                if (pasaFiltroMun) {
+                    totalPob += item.pob; countLocs++; bounds.extend([item.lat, item.lon]);
+                    let radioPunto = 2; 
+                    if (item.pob > 500000) { 
+                        radioPunto = 16; heatDataPoblacion.push([item.lat, item.lon, 1.0]);
+                        let offset = 0.025; 
+                        heatDataPoblacion.push([item.lat + offset, item.lon, 0.8]); heatDataPoblacion.push([item.lat - offset, item.lon, 0.8]);
+                        heatDataPoblacion.push([item.lat, item.lon + offset, 0.8]); heatDataPoblacion.push([item.lat, item.lon - offset, 0.8]);
+                    }
+                    else if (item.pob > 100000) { 
+                        radioPunto = 14; heatDataPoblacion.push([item.lat, item.lon, 0.9]);
+                        let offset = 0.015; 
+                        heatDataPoblacion.push([item.lat + offset, item.lon, 0.6]); heatDataPoblacion.push([item.lat - offset, item.lon, 0.6]);
+                    }
+                    else if (item.pob > 20000) { radioPunto = 10; heatDataPoblacion.push([item.lat, item.lon, 0.7]); }
+                    else if (item.pob > 5000) { radioPunto = 6; heatDataPoblacion.push([item.lat, item.lon, 0.5]); }
+                    else { radioPunto = 4; heatDataPoblacion.push([item.lat, item.lon, 0.3]); }
+
+                    L.circleMarker([item.lat, item.lon], {
+                        radius: radioPunto, color: '#cc0000', fillColor: '#ff4d4d', fillOpacity: 0.55, weight: 1
+                    }).bindPopup(
+                        `<div style="font-family:sans-serif; font-size:12px;">
+                            <h4 style="margin:0 0 4px 0; color:#cc0000;">🏠 ${item.loc}</h4>
+                            <b>Mun:</b> ${item.mun}<br><b>Estado:</b> ${item.estado}<br><b>Pob:</b> ${item.pob.toLocaleString()} hab.
+                        </div>`
+                    ).addTo(pobLayer);
+                }
+            }
+        });
+
+        dbDenue.forEach(item => {
+            let pasaFiltroEstado = isTodosEstados || valoresEstados.includes(item.estadoNorm);
+            if (pasaFiltroEstado) {
+                baseTienditasTotal++; 
+                let compositeKey = item.estadoNorm + "|" + item.munNorm;
+                let pasaFiltroMun = isTodosEstados || isTodosMun || valoresMunSeleccionados.includes(compositeKey);
+                if (pasaFiltroMun) {
+                    countTienditas++; bounds.extend([item.lat, item.lon]);
+                    let intensidadT = 0.3; let radioPunto = 3; 
+                    if (item.numOcu >= 31) { radioPunto = 10; intensidadT = 1.0; }
+                    else if (item.numOcu >= 11) { radioPunto = 7; intensidadT = 0.8; }
+                    else if (item.numOcu >= 6) { radioPunto = 5; intensidadT = 0.6; }
+                    
+                    heatDataTienditas.push([item.lat, item.lon, intensidadT]);
+                    L.circleMarker([item.lat, item.lon], {
+                        radius: radioPunto, color: '#004085', fillColor: '#007bff', fillOpacity: 0.8, weight: 1
+                    }).bindPopup(
+                        `<div style="font-family:sans-serif; font-size:12px;">
+                            <h4 style="margin:0 0 4px 0; color:#0056b3;">🛒 ${item.nombre}</h4>
+                            <b>Actividad:</b> ${item.act}<br><b>Personal:</b> ${item.per_ocu}
+                        </div>`
+                    ).addTo(clusterTienditas);
+                }
+            }
+        });
+
+        heatLayerTienditas = L.heatLayer(heatDataTienditas, { radius: 10, blur: 15, maxZoom: 12, max: 1.0, gradient: {0.3: '#0d47a1', 0.6: '#00e676', 1.0: '#d50000'} });
+        heatLayerPoblacion = L.heatLayer(heatDataPoblacion, { radius: 22, blur: 35, maxZoom: 11, max: 1.0, gradient: {0.2: '#311b92', 0.4: '#7b1fa2', 0.6: '#e91e63', 0.8: '#ff9800', 1.0: '#ffeb3b'} });
+        
+        heatLayerTienditas.addTo(map); 
+        clusterTienditas.addTo(map);
+
+        layerControl = L.control.layers(null, {
+            "📍 Población": pobLayer, 
+            "🛒 Tienditas": clusterTienditas, 
+            "🔥 Mapa Calor (Población)": heatLayerPoblacion, 
+            "🔥 Mapa Calor (Tienditas)": heatLayerTienditas
+        }, {collapsed: false}).addTo(map);
+
+        let nombreDashboard = "Todo México"; 
+        let nombreReferencia = "Todo México";
+        let baseParaPorcentajePob = granTotalPob;
+        let baseParaPorcentajeTiendas = granTotalTiendas;
+
+        if (!isTodosEstados) {
+            let nombreEstadoFormat = nombresEstados.length === 1 ? nombresEstados[0] : `${nombresEstados.length} Estados`;
+            if (isTodosMun) {
+                nombreDashboard = `Todo ${nombreEstadoFormat}`;
+                nombreReferencia = "Todo México";
+                baseParaPorcentajePob = granTotalPob;
+                baseParaPorcentajeTiendas = granTotalTiendas;
+            } else {
+                nombreDashboard = nombresMunSeleccionados.join(', ');
+                nombreReferencia = nombreEstadoFormat;
+                baseParaPorcentajePob = basePobTotal;
+                baseParaPorcentajeTiendas = baseTienditasTotal;
+            }
+        }
+        
+        actualizarDashboard(nombreDashboard, totalPob, countLocs, countTienditas, baseParaPorcentajePob, baseParaPorcentajeTiendas, nombreReferencia);
+        if (bounds.isValid()) map.fitBounds(bounds, {padding: [30, 30]});
+        
+        statusMsg.style.color = "#28a745";
+        statusMsg.innerText = `✅ ¡Análisis completado!`;
+    }
+
+    function descargarDatosExcel() {
+        let isTodosEstados = document.getElementById('cb-todos-estados').checked;
+        let cbsEstados = document.querySelectorAll('.estado-cb:checked');
+        let valoresEstados = Array.from(cbsEstados).map(cb => cb.value);
+
+        if (!isTodosEstados && valoresEstados.length === 0) {
+            alert("Primero selecciona zonas para descargar.");
+            return;
+        }
+
+        let isTodosMun = true; let valoresMun = [];
+        if (!isTodosEstados) {
+            isTodosMun = document.getElementById('cb-todos') ? document.getElementById('cb-todos').checked : true;
+            valoresMun = Array.from(document.querySelectorAll('.mun-cb:checked')).map(cb => cb.value);
+        }
+
+        let dataFiltrada = [];
+
+        dbDenue.forEach(item => {
+            let pasaFiltroEstado = isTodosEstados || valoresEstados.includes(item.estadoNorm);
+            if (pasaFiltroEstado) {
+                let compositeKey = item.estadoNorm + "|" + item.munNorm;
+                let pasaFiltroMun = isTodosEstados || isTodosMun || valoresMun.includes(compositeKey);
+                if (pasaFiltroMun) {
+                    dataFiltrada.push({
+                        "Establecimiento": item.nombre,
+                        "Actividad": item.act,
+                        "Personal Ocupado": item.per_ocu,
+                        "Estado": item.estadoNorm,
+                        "Municipio": item.munNorm,
+                        "Latitud": item.lat,
+                        "Longitud": item.lon
+                    });
+                }
+            }
+        });
+
+        if (dataFiltrada.length === 0) {
+            alert("No se encontraron tiendas en esta selección.");
+            return;
+        }
+
+        let nombreArchivo = "Tiendas_";
+        if (isTodosEstados) nombreArchivo += "Nacionales";
+        else if (valoresEstados.length === 1) nombreArchivo += valoresEstados[0];
+        else nombreArchivo += "Multi_Estado";
+
+        let csv = Papa.unparse(dataFiltrada);
+        let blob = new Blob(["\uFEFF" + csv], {type: 'text/csv;charset=utf-8;'});
+        let link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${nombreArchivo}.csv`;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+</script>
+</body>
+</html>
